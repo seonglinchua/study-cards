@@ -1,22 +1,30 @@
-import { ref, set, get, push, update, remove } from 'firebase/database';
-import { database } from './firebase';
 import { Deck, Card, UserProgress } from '@/types';
 import { seedDecks } from './seedData';
+
+const STORAGE_KEYS = {
+  DECKS: 'study-cards-decks',
+  USER_PROGRESS: 'study-cards-progress',
+};
+
+// Helper to safely access localStorage (for SSR compatibility)
+function getLocalStorage() {
+  if (typeof window !== 'undefined') {
+    return window.localStorage;
+  }
+  return null;
+}
 
 // Initialize database with seed data
 export async function initializeDatabase() {
   try {
-    const decksRef = ref(database, 'decks');
-    const snapshot = await get(decksRef);
+    const storage = getLocalStorage();
+    if (!storage) return false;
 
-    if (!snapshot.exists()) {
+    const existingDecks = storage.getItem(STORAGE_KEYS.DECKS);
+
+    if (!existingDecks) {
       // Database is empty, seed it
-      const decksData: { [key: string]: Deck } = {};
-      seedDecks.forEach(deck => {
-        decksData[deck.id] = deck;
-      });
-
-      await set(decksRef, decksData);
+      storage.setItem(STORAGE_KEYS.DECKS, JSON.stringify(seedDecks));
       console.log('Database initialized with seed data');
       return true;
     }
@@ -30,12 +38,13 @@ export async function initializeDatabase() {
 // Get all decks
 export async function getAllDecks(): Promise<Deck[]> {
   try {
-    const decksRef = ref(database, 'decks');
-    const snapshot = await get(decksRef);
+    const storage = getLocalStorage();
+    if (!storage) return [];
 
-    if (snapshot.exists()) {
-      const decksData = snapshot.val();
-      return Object.values(decksData);
+    const decksData = storage.getItem(STORAGE_KEYS.DECKS);
+
+    if (decksData) {
+      return JSON.parse(decksData);
     }
     return [];
   } catch (error) {
@@ -47,13 +56,9 @@ export async function getAllDecks(): Promise<Deck[]> {
 // Get a single deck by ID
 export async function getDeckById(deckId: string): Promise<Deck | null> {
   try {
-    const deckRef = ref(database, `decks/${deckId}`);
-    const snapshot = await get(deckRef);
-
-    if (snapshot.exists()) {
-      return snapshot.val();
-    }
-    return null;
+    const decks = await getAllDecks();
+    const deck = decks.find(d => d.id === deckId);
+    return deck || null;
   } catch (error) {
     console.error('Error getting deck:', error);
     throw error;
@@ -74,9 +79,11 @@ export async function getFeaturedDecks(): Promise<Deck[]> {
 // Create a new deck
 export async function createDeck(deck: Omit<Deck, 'id' | 'createdAt' | 'updatedAt'>): Promise<string> {
   try {
-    const decksRef = ref(database, 'decks');
-    const newDeckRef = push(decksRef);
-    const deckId = newDeckRef.key!;
+    const storage = getLocalStorage();
+    if (!storage) throw new Error('localStorage not available');
+
+    const decks = await getAllDecks();
+    const deckId = `deck-${Date.now()}`;
 
     const newDeck: Deck = {
       ...deck,
@@ -85,7 +92,9 @@ export async function createDeck(deck: Omit<Deck, 'id' | 'createdAt' | 'updatedA
       updatedAt: Date.now(),
     };
 
-    await set(newDeckRef, newDeck);
+    decks.push(newDeck);
+    storage.setItem(STORAGE_KEYS.DECKS, JSON.stringify(decks));
+
     return deckId;
   } catch (error) {
     console.error('Error creating deck:', error);
@@ -96,11 +105,21 @@ export async function createDeck(deck: Omit<Deck, 'id' | 'createdAt' | 'updatedA
 // Update a deck
 export async function updateDeck(deckId: string, updates: Partial<Deck>): Promise<void> {
   try {
-    const deckRef = ref(database, `decks/${deckId}`);
-    await update(deckRef, {
+    const storage = getLocalStorage();
+    if (!storage) throw new Error('localStorage not available');
+
+    const decks = await getAllDecks();
+    const deckIndex = decks.findIndex(d => d.id === deckId);
+
+    if (deckIndex === -1) throw new Error('Deck not found');
+
+    decks[deckIndex] = {
+      ...decks[deckIndex],
       ...updates,
       updatedAt: Date.now(),
-    });
+    };
+
+    storage.setItem(STORAGE_KEYS.DECKS, JSON.stringify(decks));
   } catch (error) {
     console.error('Error updating deck:', error);
     throw error;
@@ -110,8 +129,13 @@ export async function updateDeck(deckId: string, updates: Partial<Deck>): Promis
 // Delete a deck
 export async function deleteDeck(deckId: string): Promise<void> {
   try {
-    const deckRef = ref(database, `decks/${deckId}`);
-    await remove(deckRef);
+    const storage = getLocalStorage();
+    if (!storage) throw new Error('localStorage not available');
+
+    const decks = await getAllDecks();
+    const filteredDecks = decks.filter(d => d.id !== deckId);
+
+    storage.setItem(STORAGE_KEYS.DECKS, JSON.stringify(filteredDecks));
   } catch (error) {
     console.error('Error deleting deck:', error);
     throw error;
@@ -167,11 +191,15 @@ export async function markCardAsLearned(deckId: string, cardId: string, learned:
 // Get user progress for a deck
 export async function getUserProgress(userId: string, deckId: string): Promise<UserProgress | null> {
   try {
-    const progressRef = ref(database, `userProgress/${userId}/${deckId}`);
-    const snapshot = await get(progressRef);
+    const storage = getLocalStorage();
+    if (!storage) return null;
 
-    if (snapshot.exists()) {
-      return snapshot.val();
+    const progressData = storage.getItem(STORAGE_KEYS.USER_PROGRESS);
+
+    if (progressData) {
+      const allProgress = JSON.parse(progressData);
+      const userProgress = allProgress[userId]?.[deckId];
+      return userProgress || null;
     }
     return null;
   } catch (error) {
@@ -187,11 +215,23 @@ export async function updateUserProgress(
   progress: Partial<UserProgress>
 ): Promise<void> {
   try {
-    const progressRef = ref(database, `userProgress/${userId}/${deckId}`);
-    await update(progressRef, {
+    const storage = getLocalStorage();
+    if (!storage) throw new Error('localStorage not available');
+
+    const progressData = storage.getItem(STORAGE_KEYS.USER_PROGRESS);
+    const allProgress = progressData ? JSON.parse(progressData) : {};
+
+    if (!allProgress[userId]) {
+      allProgress[userId] = {};
+    }
+
+    allProgress[userId][deckId] = {
+      ...allProgress[userId][deckId],
       ...progress,
       lastStudied: Date.now(),
-    });
+    };
+
+    storage.setItem(STORAGE_KEYS.USER_PROGRESS, JSON.stringify(allProgress));
   } catch (error) {
     console.error('Error updating user progress:', error);
     throw error;
