@@ -7,11 +7,24 @@ import { Button } from "@/components/ui/button"
 export function ThemeToggle() {
   const { theme, setTheme } = useTheme()
 
+  const toggleTheme = () => {
+    // If theme is system, check actual system preference and toggle to opposite
+    if (theme === "system") {
+      const systemTheme = window.matchMedia("(prefers-color-scheme: dark)").matches
+        ? "dark"
+        : "light"
+      setTheme(systemTheme === "light" ? "dark" : "light")
+    } else {
+      // Toggle between light and dark
+      setTheme(theme === "light" ? "dark" : "light")
+    }
+  }
+
   return (
     <Button
       variant="ghost"
       size="icon"
-      onClick={() => setTheme(theme === "light" ? "dark" : "light")}
+      onClick={toggleTheme}
       className="rounded-full"
     >
       <Sun className="h-5 w-5 rotate-0 scale-100 transition-all dark:-rotate-90 dark:scale-0" />
